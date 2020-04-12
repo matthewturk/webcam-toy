@@ -59,24 +59,21 @@ class CameraPipe(traitlets.HasTraits):
             self.cam_out.schedule_frame(self.output_arr1)
 
 class CameraEffect(traitlets.HasTraits):
-    def __init__(self, *args, **kwargs):
-        super(CameraEffect, self).__init__(*args, **kwargs)
-        self.setup_function({})
+    func = traitlets.Any()
 
     def handle_key(self, symbol, modifier):
         return False
 
     def __call__(self, input_arr, output_arr):
-        return self.func(input_arr, output_arr)
+        return self.call_func(input_arr, output_arr)
 
 class PixelizeEffect(CameraEffect):
     pixel_size = traitlets.CInt(4)
-    @traitlets.observe("pixel_size")
-    def setup_function(self, change):
-        pixel_size = self.pixel_size
+    @traitlets.default("func")
+    def _default_func(self):
         # By the way, this *way* over JITs things -- need to turn pixel_size into an argument.
         @numba.jit(nopython = True)
-        def func(input_arr, output_arr):
+        def func(input_arr, output_arr, pixel_size):
             for i in range(input_arr.shape[0]):
                 for j in range(input_arr.shape[1]):
                     for k in range(input_arr.shape[2]):
@@ -84,12 +81,15 @@ class PixelizeEffect(CameraEffect):
                                                             (j // pixel_size) * pixel_size,
                                                             k]
 
-        self.func = func
+        return func
+
+    def call_func(self, input_arr, output_arr):
+        return self.func(input_arr, output_arr, self.pixel_size)
 
     def handle_key(self, symbol, modifiers):
         if symbol == pyglet.window.key.A:
             self.pixel_size += 1
-        elif symbol == pyglet.window.key.B:
+        elif symbol == pyglet.window.key.S:
             self.pixel_size = max(self.pixel_size - 1, 1)
         else:
             return False
@@ -101,13 +101,10 @@ class ColorOffsetEffect(CameraEffect):
     green_offset = traitlets.CInt(0)
     blue_offset = traitlets.CInt(0)
 
-    @traitlets.observe("red_offset", "green_offset", "blue_offset")
-    def setup_function(self, change):
-        red_offset = self.red_offset
-        blue_offset = self.blue_offset
-        green_offset = self.green_offset
+    @traitlets.default("func")
+    def _default_func(self):
         @numba.jit(nopython=True)
-        def func(input_arr, output_arr):
+        def func(input_arr, output_arr, red_offset, green_offset, blue_offset):
             for i in range(input_arr.shape[0]):
                 for j in range(input_arr.shape[1]):
                     # red
@@ -119,7 +116,10 @@ class ColorOffsetEffect(CameraEffect):
                     # blue
                     i1 = (i + blue_offset) % input_arr.shape[0]
                     output_arr[i, j, 2] = input_arr[i1, j, 2]
-        self.func = func
+        return func
+
+    def call_func(self, input_arr, output_arr):
+        return self.func(input_arr, output_arr, self.red_offset, self.green_offset, self.blue_offset)
 
     def handle_key(self, symbol, modifiers):
         sign = 1
