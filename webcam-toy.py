@@ -17,9 +17,6 @@ def get_numpy_data(arr):
      assert arr.dtype == np.uint8
      return arr.ctypes.data_as(ctypes.POINTER(ctypes.c_uint8 * arr.size))[0]
 
-class CameraEffect(traitlets.HasTraits):
-    pass
-
 class CameraPipe(traitlets.HasTraits):
     input_device = traitlets.Unicode("/dev/video0")
     output_device = traitlets.Unicode("/dev/video1")
@@ -58,6 +55,10 @@ class CameraPipe(traitlets.HasTraits):
         if self.cam_out is not None:
             self.cam_out.schedule_frame(self.output_arr1)
 
+class CameraEffect(traitlets.HasTraits):
+    def handle_key(self, symbol, modifier):
+        return False
+
 class PixelizeEffect(CameraEffect):
     pixel_size = traitlets.CInt(4)
     @traitlets.observe("pixel_size")
@@ -76,6 +77,16 @@ class PixelizeEffect(CameraEffect):
 
     def __call__(self, input_arr, output_arr):
         return self.func(input_arr, output_arr)
+
+    def handle_key(self, symbol, modifiers):
+        if symbol == pyglet.window.key.A:
+            self.pixel_size += 1
+        elif symbol == pyglet.window.key.B:
+            self.pixel_size = max(self.pixel_size - 1, 1)
+        else:
+            return False
+        print(f"Pixel size is now {self.pixel_size}")
+        return True
 
 @numba.jit(nopython=True)
 def color_offset_frame(input_arr, output_arr):
@@ -104,14 +115,11 @@ class CameraWatcher(pyglet.window.Window):
         pyglet.clock.schedule_interval(self.camera_pipe.next_frame, 1.0/self.camera_pipe.fps)
 
     def on_key_press(self, symbol, modifiers):
-        ps = self.camera_pipe.effects[-1].pixel_size
-        if symbol == pyglet.window.key.A:
-            self.camera_pipe.effects[-1].pixel_size = max(ps + 1, 1)
-        elif symbol == pyglet.window.key.B:
-            self.camera_pipe.effects[-1].pixel_size = max(ps - 1, 1)
-        else:
+        handled = False
+        for effect in self.camera_pipe.effects:
+            handled = handled or effect.handle_key(symbol, modifiers)
+        if not handled:
             return super(CameraWatcher, self).on_key_press(symbol, modifiers)
-        print("Pixel size", self.camera_pipe.effects[-1].pixel_size)
 
     def update_image_data(self):
         self.image_data.set_data("RGB", 1, get_numpy_data(self.camera_pipe.display_array))
