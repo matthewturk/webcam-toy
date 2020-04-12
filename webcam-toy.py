@@ -29,7 +29,10 @@ class CameraPipe(traitlets.HasTraits):
 
     def __init__(self, *args, **kwargs):
         super(CameraPipe, self).__init__(*args, **kwargs)
-        # We don't manage these with traitlets
+        # We don't manage these arrays with traitlets.
+        # Pyglet does a lot of checking and byte-joining with arrays based on
+        # pitch, so we hold on to things here and then read in an upside-down
+        # way.
         self.display_array = np.zeros((self.height, self.width, 3), dtype="u1", order="C")
         self.output_arr1 = np.flipud(self.display_array)
         self.output_arr2 = np.zeros((self.height, self.width, 3), dtype="u1", order="C")
@@ -56,14 +59,22 @@ class CameraPipe(traitlets.HasTraits):
             self.cam_out.schedule_frame(self.output_arr1)
 
 class CameraEffect(traitlets.HasTraits):
+    def __init__(self, *args, **kwargs):
+        super(CameraEffect, self).__init__(*args, **kwargs)
+        self.setup_function({})
+
     def handle_key(self, symbol, modifier):
         return False
+
+    def __call__(self, input_arr, output_arr):
+        return self.func(input_arr, output_arr)
 
 class PixelizeEffect(CameraEffect):
     pixel_size = traitlets.CInt(4)
     @traitlets.observe("pixel_size")
     def setup_function(self, change):
         pixel_size = self.pixel_size
+        # By the way, this *way* over JITs things -- need to turn pixel_size into an argument.
         @numba.jit(nopython = True)
         def func(input_arr, output_arr):
             for i in range(input_arr.shape[0]):
@@ -75,9 +86,6 @@ class PixelizeEffect(CameraEffect):
 
         self.func = func
 
-    def __call__(self, input_arr, output_arr):
-        return self.func(input_arr, output_arr)
-
     def handle_key(self, symbol, modifiers):
         if symbol == pyglet.window.key.A:
             self.pixel_size += 1
@@ -88,14 +96,44 @@ class PixelizeEffect(CameraEffect):
         print(f"Pixel size is now {self.pixel_size}")
         return True
 
-@numba.jit(nopython=True)
-def color_offset_frame(input_arr, output_arr):
-    for i in range(input_arr.shape[0]):
-        for j in range(input_arr.shape[1]):
-            for k in range(input_arr.shape[2]):
-                i1 = (i + pixel_size*k) % input_arr.shape[0]
-                output_arr[i, j, 2 - k] = input_arr[i1, j, k]
+class ColorOffsetEffect(CameraEffect):
+    red_offset = traitlets.CInt(0)
+    green_offset = traitlets.CInt(0)
+    blue_offset = traitlets.CInt(0)
 
+    @traitlets.observe("red_offset", "green_offset", "blue_offset")
+    def setup_function(self, change):
+        red_offset = self.red_offset
+        blue_offset = self.blue_offset
+        green_offset = self.green_offset
+        @numba.jit(nopython=True)
+        def func(input_arr, output_arr):
+            for i in range(input_arr.shape[0]):
+                for j in range(input_arr.shape[1]):
+                    # red
+                    i1 = (i + red_offset) % input_arr.shape[0]
+                    output_arr[i, j, 0] = input_arr[i1, j, 0]
+                    # green
+                    i1 = (i + green_offset) % input_arr.shape[0]
+                    output_arr[i, j, 1] = input_arr[i1, j, 1]
+                    # blue
+                    i1 = (i + blue_offset) % input_arr.shape[0]
+                    output_arr[i, j, 2] = input_arr[i1, j, 2]
+        self.func = func
+
+    def handle_key(self, symbol, modifiers):
+        sign = 1
+        if modifiers & pyglet.window.key.MOD_SHIFT:
+            sign = -1
+        if symbol == pyglet.window.key.R:
+            self.red_offset = max(0, sign + self.red_offset)
+        elif symbol == pyglet.window.key.G:
+            self.green_offset = max(0, sign + self.green_offset)
+        elif symbol == pyglet.window.key.B:
+            self.blue_offset = max(0, sign + self.blue_offset)
+        else:
+            return False
+        return True
 
 class CameraWatcher(pyglet.window.Window):
     def __init__(self, *args, **kwargs):
@@ -104,8 +142,8 @@ class CameraWatcher(pyglet.window.Window):
         if not camera_pipe:
             camera_pipe = CameraPipe(width = self.width, height = self.height)#, cam_out = None)
         self.camera_pipe = camera_pipe
-        pf = PixelizeEffect(pixel_size = 1)
-        self.camera_pipe.effects.append(pf)
+        self.camera_pipe.effects.append(PixelizeEffect(pixel_size = 1))
+        self.camera_pipe.effects.append(ColorOffsetEffect(red_offset = 0, green_offset = 0, blue_offset = 0))
         self.image_data = pyglet.image.ImageData(
             self.camera_pipe.width, self.camera_pipe.height,
             'RGB', get_numpy_data(self.camera_pipe.display_array),
